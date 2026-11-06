@@ -100,8 +100,21 @@ from urllib.parse import urlparse
 # ---------------------------------------------------------------------------
 # Configuration (environment variables override defaults)
 # ---------------------------------------------------------------------------
+def _load_env_file():
+    for p in (Path("config/settings.env"), Path(".env"), Path(__file__).resolve().parent.parent / "config" / "settings.env"):
+        if p.exists():
+            for line in p.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip().strip("\"'")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+            break
+
+_load_env_file()
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:14b")
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen3.5:4b")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "ollama")
 ALLOW_REMOTE_LLM = os.getenv("ALLOW_REMOTE_LLM", "0") == "1"
 REDACT_IDS = os.getenv("REDACT_IDS", "auto")          # auto (= on for remote LLMs) | 1 | 0
