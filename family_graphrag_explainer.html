@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Family GraphRAG — Deep Dive & Architecture Guide</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --background: #0f172a;
+      --card: #1e293b;
+      --foreground: #f8fafc;
+      --muted-foreground: #94a3b8;
+      --border: #334155;
+      --primary: #38bdf8;
+      --primary-foreground: #0f172a;
+      --accent: #818cf8;
+      --accent-green: #34d399;
+      --accent-amber: #fbbf24;
+    }
+    body {
+      background-color: var(--background);
+      color: var(--foreground);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    .tab-btn.active {
+      background-color: var(--primary);
+      color: var(--primary-foreground);
+      font-weight: 600;
+    }
+    pre code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+  </style>
+</head>
+<body class="antialiased p-4 md:p-8 min-h-screen">
+
+  <!-- Header -->
+  <header class="max-w-6xl mx-auto mb-10 pb-6 border-b border-[var(--border)]">
+    <div class="flex flex-wrap items-center justify-between gap-4">
+      <div>
+        <div class="flex items-center gap-2 mb-2">
+          <span class="px-2.5 py-1 text-xs font-bold rounded-full bg-cyan-900/60 text-cyan-300 border border-cyan-700">Code Architecture</span>
+          <span class="px-2.5 py-1 text-xs font-bold rounded-full bg-indigo-900/60 text-indigo-300 border border-indigo-700">100% Local & Offline</span>
+          <span class="px-2.5 py-1 text-xs font-bold rounded-full bg-emerald-900/60 text-emerald-300 border border-emerald-700">Neo4j + ChromaDB</span>
+        </div>
+        <h1 class="text-3xl md:text-4xl font-extrabold tracking-tight text-white flex items-center gap-3">
+          Inside <code class="text-cyan-400 font-mono">family_graphrag.py</code>
+        </h1>
+        <p class="text-[var(--muted-foreground)] mt-2 text-base md:text-lg">
+          An in-depth technical breakdown of how personal archives become a dual-memory knowledge graph and vector search engine.
+        </p>
+      </div>
+      <div class="flex items-center gap-2 text-xs text-[var(--muted-foreground)] bg-slate-900/70 p-3 rounded-lg border border-slate-800">
+        <div>
+          <div><strong class="text-slate-300">File:</strong> <span class="font-mono text-cyan-400">src/family_graphrag.py</span></div>
+          <div><strong class="text-slate-300">Lines:</strong> ~1,520 lines of clean Python</div>
+          <div><strong class="text-slate-300">Engines:</strong> Ollama · Neo4j · Chroma · BGE</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Interactive Navigation Bar -->
+  <nav class="max-w-6xl mx-auto mb-8 flex flex-wrap gap-2 p-1.5 bg-slate-900/80 rounded-xl border border-[var(--border)]">
+    <button onclick="switchTab('overview')" id="tab-overview" class="tab-btn active px-4 py-2 text-sm rounded-lg transition-all duration-150">1. Executive Overview</button>
+    <button onclick="switchTab('pipeline')" id="tab-pipeline" class="tab-btn px-4 py-2 text-sm rounded-lg transition-all duration-150">2. The 2-Pass Ingestion Pipeline</button>
+    <button onclick="switchTab('schema')" id="tab-schema" class="tab-btn px-4 py-2 text-sm rounded-lg transition-all duration-150">3. Neo4j Graph Schema</button>
+    <button onclick="switchTab('retrieval')" id="tab-retrieval" class="tab-btn px-4 py-2 text-sm rounded-lg transition-all duration-150">4. Hybrid Retrieval & Ask Engine</button>
+    <button onclick="switchTab('commands')" id="tab-commands" class="tab-btn px-4 py-2 text-sm rounded-lg transition-all duration-150">5. CLI Subcommands</button>
+    <button onclick="switchTab('privacy')" id="tab-privacy" class="tab-btn px-4 py-2 text-sm rounded-lg transition-all duration-150">6. Privacy & PII Guard</button>
+  </nav>
+
+  <main class="max-w-6xl mx-auto space-y-12">
+
+    <!-- SECTION 1: OVERVIEW -->
+    <section id="sec-overview" class="tab-content space-y-6">
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 md:p-8 shadow-xl">
+        <h2 class="text-2xl font-bold text-white mb-4 flex items-center gap-2">
+          <span class="w-3 h-3 rounded-full bg-cyan-400"></span>
+          What Does <code class="text-cyan-300">family_graphrag.py</code> Do?
+        </h2>
+        <p class="text-[var(--muted-foreground)] leading-relaxed text-base">
+          Standard RAG (Retrieval-Augmented Generation) chops documents into plain text chunks and relies purely on semantic similarity. While great for simple lookup, it fails on complex questions like:
+          <em class="text-slate-200">"Does our health insurance cover Dad's cataract operation performed at Apollo last month?"</em>
+          because the <strong class="text-white">hospital discharge memo</strong>, the <strong class="text-white">policy schedule</strong>, and the <strong class="text-white">kinship relation</strong> ("Dad" = Saibabu) live in separate documents.
+        </p>
+
+        <div class="mt-6 p-4 rounded-xl bg-slate-900/80 border border-slate-700/60">
+          <h3 class="text-sm font-semibold uppercase tracking-wider text-cyan-400 mb-2">The Dual-Memory Architecture</h3>
+          <p class="text-sm text-slate-300 mb-4">
+            <code class="text-cyan-300">family_graphrag.py</code> bridges this gap by creating two complementary stores from your extracted text:
+          </p>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="p-4 rounded-lg bg-blue-950/40 border border-blue-800/50">
+              <div class="flex items-center gap-2 text-blue-300 font-bold mb-1">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                1. Vector Store (ChromaDB)
+              </div>
+              <p class="text-xs text-slate-300 leading-relaxed">
+                Stores chunk embeddings created with <code class="text-cyan-300">bge-small-en-v1.5</code>. Finds the closest raw passages matching your query with page numbers and timestamps.
+              </p>
+            </div>
+            <div class="p-4 rounded-lg bg-emerald-950/40 border border-emerald-800/50">
+              <div class="flex items-center gap-2 text-emerald-300 font-bold mb-1">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                2. Graph Database (Neo4j)
+              </div>
+              <p class="text-xs text-slate-300 leading-relaxed">
+                Connects Person, Organization, Asset, and Category nodes with typed relationships (<code class="text-emerald-300">SUBJECT_OF</code>, <code class="text-emerald-300">ISSUED_BY</code>, <code class="text-emerald-300">INSURES</code>, <code class="text-emerald-300">PARENT_OF</code>) allowing multi-hop reasoning.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- High-level flow visualization -->
+        <div class="mt-8">
+          <h3 class="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-4">Complete System Data Flow</h3>
+          <div class="grid grid-cols-1 md:grid-cols-4 gap-3 text-center">
+            <div class="p-3 bg-slate-900 rounded-lg border border-slate-700">
+              <div class="text-xs text-cyan-400 font-mono mb-1">STAGE 1: INPUT</div>
+              <div class="text-sm font-bold text-white">data/extracted/text</div>
+              <div class="text-xs text-slate-400 mt-1">Structured text files with page markers & headers</div>
+            </div>
+            <div class="p-3 bg-slate-900 rounded-lg border border-slate-700">
+              <div class="text-xs text-indigo-400 font-mono mb-1">STAGE 2: EXTRACTION</div>
+              <div class="text-sm font-bold text-white">Two LLM Passes</div>
+              <div class="text-xs text-slate-400 mt-1">Pass 1: Doc Card<br/>Pass 2: Chunk Entities & Relations</div>
+            </div>
+            <div class="p-3 bg-slate-900 rounded-lg border border-slate-700">
+              <div class="text-xs text-emerald-400 font-mono mb-1">STAGE 3: DUAL INDEX</div>
+              <div class="text-sm font-bold text-white">Chroma + Neo4j</div>
+              <div class="text-xs text-slate-400 mt-1">Vectors for semantic search + Graph for multi-hop facts</div>
+            </div>
+            <div class="p-3 bg-slate-900 rounded-lg border border-slate-700">
+              <div class="text-xs text-amber-400 font-mono mb-1">STAGE 4: RETRIEVAL</div>
+              <div class="text-sm font-bold text-white">ask / expiring / profile</div>
+              <div class="text-xs text-slate-400 mt-1">Hybrid graph-expanded cited answers and dossiers</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 2: PIPELINE -->
+    <section id="sec-pipeline" class="tab-content hidden space-y-6">
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 md:p-8 shadow-xl">
+        <h2 class="text-2xl font-bold text-white mb-2 flex items-center gap-2">
+          <span class="w-3 h-3 rounded-full bg-indigo-400"></span>
+          The Two-Pass LLM Ingestion Pipeline (<code class="text-indigo-300">build</code>)
+        </h2>
+        <p class="text-[var(--muted-foreground)] mb-6 text-sm">
+          Processed via <code class="text-cyan-400">process_doc()</code> in lines 1137-1176. Each document undergoes two dedicated extraction passes with local LLM prompts:
+        </p>
+
+        <!-- Two passes cards -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+          <!-- Pass 1 -->
+          <div class="bg-slate-900/90 border border-indigo-700/40 rounded-xl p-5 relative overflow-hidden">
+            <div class="absolute top-0 right-0 px-3 py-1 bg-indigo-600 text-white text-xs font-bold rounded-bl-lg">PASS 1</div>
+            <h3 class="text-lg font-bold text-white mb-2 flex items-center gap-2">
+              <span>🗂️ Document Card Extraction</span>
+            </h3>
+            <div class="text-xs text-indigo-300 font-mono mb-3">1 LLM Call Per Document (extract_card)</div>
+            <p class="text-xs text-slate-300 leading-relaxed mb-4">
+              Inspects the header and opening/closing pages to extract document-level metadata without getting bogged down in body text:
+            </p>
+            <ul class="text-xs text-slate-300 space-y-1.5 list-disc list-inside bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+              <li><strong class="text-white">Document Category:</strong> 30+ standardized types (e.g., <code class="text-cyan-300">health_insurance</code>, <code class="text-cyan-300">education_certificate</code>).</li>
+              <li><strong class="text-white">Subject / Holder:</strong> Family members with roles (<code class="text-indigo-300">student</code>, <code class="text-indigo-300">patient</code>, <code class="text-indigo-300">policyholder</code>).</li>
+              <li><strong class="text-white">Issuer:</strong> Organization (e.g., <code class="text-amber-300">Star Health</code>, <code class="text-amber-300">Osmania University</code>).</li>
+              <li><strong class="text-white">Dates:</strong> Issue date, expiry date, renewal deadlines, due dates.</li>
+              <li><strong class="text-white">Financials:</strong> Sum insured, fees paid, invoice total, currency.</li>
+            </ul>
+            <div class="mt-3 text-[11px] text-slate-400">
+              Powers the <code class="text-cyan-400">expiring</code> and <code class="text-cyan-400">profile</code> commands directly!
+            </div>
+          </div>
+
+          <!-- Pass 2 -->
+          <div class="bg-slate-900/90 border border-emerald-700/40 rounded-xl p-5 relative overflow-hidden">
+            <div class="absolute top-0 right-0 px-3 py-1 bg-emerald-600 text-white text-xs font-bold rounded-bl-lg">PASS 2</div>
+            <h3 class="text-lg font-bold text-white mb-2 flex items-center gap-2">
+              <span>🧬 Chunk Entity & Relation Extraction</span>
+            </h3>
+            <div class="text-xs text-emerald-300 font-mono mb-3">1 LLM Call Per Chunk (extract, multi-threaded)</div>
+            <p class="text-xs text-slate-300 leading-relaxed mb-4">
+              Segments long documents into page-aligned chunks (~1,500 chars) and performs schema-constrained extraction:
+            </p>
+            <ul class="text-xs text-slate-300 space-y-1.5 list-disc list-inside bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+              <li><strong class="text-white">Entity Recognition:</strong> Extracts Person, Asset, Organization, MedicalCondition, EducationalDegree.</li>
+              <li><strong class="text-white">Typed Relationships:</strong> <code class="text-emerald-300">PARENT_OF</code>, <code class="text-emerald-300">DIAGNOSED_WITH</code>, <code class="text-emerald-300">PRESCRIBED</code>, <code class="text-emerald-300">PURCHASED</code>, <code class="text-emerald-300">INSURES</code>.</li>
+              <li><strong class="text-white">Grounding & Evidence:</strong> Stores the verbatim quote backing the relationship directly in <code class="text-cyan-300">rel.evidence</code>.</li>
+              <li><strong class="text-white">Parallel Workers:</strong> Uses Python <code class="text-cyan-300">ThreadPoolExecutor</code> to run multiple chunk extractions in parallel.</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Incremental cache breakdown -->
+        <div class="p-4 rounded-xl bg-slate-900 border border-slate-700">
+          <h3 class="text-sm font-semibold text-white mb-2 flex items-center gap-2">
+            <span>⚡ Smart Incremental State & Resume (<code class="text-cyan-400 font-mono">state.jsonl</code>)</span>
+          </h3>
+          <p class="text-xs text-slate-300 leading-relaxed">
+            The script computes a <strong class="text-white">SHA-1 hash</strong> of the file text. If a file is already indexed in <code class="text-cyan-300">data/graph/chroma/state.jsonl</code> and its content hash has not changed, it is skipped instantly. If you add 5 new PDFs to an archive of 200 documents, <code class="text-cyan-400">build</code> only calls the LLM on those 5 new files!
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 3: SCHEMA -->
+    <section id="sec-schema" class="tab-content hidden space-y-6">
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 md:p-8 shadow-xl">
+        <h2 class="text-2xl font-bold text-white mb-2 flex items-center gap-2">
+          <span class="w-3 h-3 rounded-full bg-emerald-400"></span>
+          Neo4j Graph Database Schema
+        </h2>
+        <p class="text-[var(--muted-foreground)] mb-6 text-sm">
+          The ontology strictly defines node labels, constraints, and relational edges to guarantee fast Cypher traversals:
+        </p>
+
+        <!-- Nodes and Edge Table -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div class="space-y-4">
+            <h3 class="text-sm font-semibold uppercase tracking-wider text-cyan-400">Core Graph Nodes</h3>
+            <div class="space-y-2 text-xs">
+              <div class="p-3 bg-slate-900 rounded-lg border border-slate-800">
+                <span class="px-2 py-0.5 rounded font-mono font-bold bg-blue-900/60 text-blue-300">:Document</span>
+                <p class="text-slate-300 mt-1">Represents a file. Stores <code class="text-cyan-300">id</code>, <code class="text-cyan-300">title</code>, <code class="text-cyan-300">category</code>, <code class="text-cyan-300">expiry_date</code>, <code class="text-cyan-300">amount</code>, <code class="text-cyan-300">doc_number</code>.</p>
+              </div>
+              <div class="p-3 bg-slate-900 rounded-lg border border-slate-800">
+                <span class="px-2 py-0.5 rounded font-mono font-bold bg-emerald-900/60 text-emerald-300">:Chunk</span>
+                <p class="text-slate-300 mt-1">A page or text segment. Stores chunk <code class="text-cyan-300">id</code>, <code class="text-cyan-300">text</code>, <code class="text-cyan-300">locs</code> (e.g., page 3-4).</p>
+              </div>
+              <div class="p-3 bg-slate-900 rounded-lg border border-slate-800">
+                <span class="px-2 py-0.5 rounded font-mono font-bold bg-purple-900/60 text-purple-300">:Entity</span>
+                <p class="text-slate-300 mt-1">Resolved person, organization, asset, or condition. Stores normalized <code class="text-cyan-300">key</code>, <code class="text-cyan-300">name</code>, <code class="text-cyan-300">type</code>.</p>
+              </div>
+              <div class="p-3 bg-slate-900 rounded-lg border border-slate-800">
+                <span class="px-2 py-0.5 rounded font-mono font-bold bg-amber-900/60 text-amber-300">:Folder & :Category</span>
+                <p class="text-slate-300 mt-1">Preserves directory hierarchy (<code class="text-amber-300">CONTAINS</code>) and document taxonomy (<code class="text-amber-300">IN_CATEGORY</code>).</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="space-y-4">
+            <h3 class="text-sm font-semibold uppercase tracking-wider text-emerald-400">Graph Relationships (Edges)</h3>
+            <div class="p-4 bg-slate-950 rounded-xl border border-slate-800 font-mono text-xs text-slate-300 space-y-2">
+              <div><strong class="text-white">Structure:</strong></div>
+              <div class="text-cyan-300">(:Folder)-[:CONTAINS]->(:Document)</div>
+              <div class="text-cyan-300">(:Document)-[:HAS_CHUNK]->(:Chunk)</div>
+              <div class="text-cyan-300">(:Document)-[:IN_CATEGORY]->(:Category)</div>
+              
+              <div class="pt-2"><strong class="text-white">People & Issuers:</strong></div>
+              <div class="text-emerald-300">(:Entity {type:'Person'})-[:SUBJECT_OF {role}]->(:Document)</div>
+              <div class="text-emerald-300">(:Document)-[:ISSUED_BY]->(:Entity {type:'Organization'})</div>
+              
+              <div class="pt-2"><strong class="text-white">Chunk Mentions & Facts:</strong></div>
+              <div class="text-purple-300">(:Entity)-[:MENTIONED_IN]->(:Chunk)</div>
+              <div class="text-amber-300">(:Entity)-[:REL {type, evidence, date, amount}]->(:Entity)</div>
+              
+              <div class="pt-2"><strong class="text-white">Family Tree (from family.json):</strong></div>
+              <div class="text-indigo-300">(:Entity)-[:REL {type:'PARENT_OF'|'SPOUSE_OF'}]->(:Entity)</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Family Canonicalization -->
+        <div class="mt-6 p-4 rounded-xl bg-slate-900 border border-slate-700">
+          <h3 class="text-sm font-semibold text-white mb-1">Family Alias Resolution (<code class="text-cyan-400">config/family.json</code>)</h3>
+          <p class="text-xs text-slate-300">
+            Functions <code class="text-cyan-300">normalize_name()</code> and <code class="text-cyan-300">resolve_family()</code> map informal speech (<em class="text-slate-100">"Mom", "Dad", "my", "Botte Saketh"</em>) to the exact canonical person key (<code class="text-cyan-300">saketh</code>, <code class="text-cyan-300">saibabu</code>). When you query about "my marks", it automatically queries Saketh!
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 4: RETRIEVAL -->
+    <section id="sec-retrieval" class="tab-content hidden space-y-6">
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 md:p-8 shadow-xl">
+        <h2 class="text-2xl font-bold text-white mb-2 flex items-center gap-2">
+          <span class="w-3 h-3 rounded-full bg-cyan-400"></span>
+          Hybrid Retrieval: How <code class="text-cyan-300">ask</code> Works
+        </h2>
+        <p class="text-[var(--muted-foreground)] mb-6 text-sm">
+          The <code class="text-cyan-400">ask</code> command combines vector similarity search with multi-hop Cypher graph traversal in 4 synchronized steps:
+        </p>
+
+        <!-- 4 Steps Interactive Layout -->
+        <div class="space-y-4">
+          <div class="p-4 bg-slate-900/90 rounded-xl border-l-4 border-cyan-500">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold text-cyan-400 uppercase tracking-wide">Step 1 · Identity & Vector Retrieval (ChromaDB)</span>
+              <span class="text-xs text-slate-500 font-mono">Lines 1283-1296</span>
+            </div>
+            <p class="text-xs text-slate-300 mt-1">
+              Resolves pronouns ("my" &rarr; Saketh). Embeds the query using <code class="text-cyan-300">bge-small-en-v1.5</code> and retrieves the top <strong class="text-white">K seed chunks</strong> from ChromaDB.
+            </p>
+          </div>
+
+          <div class="p-4 bg-slate-900/90 rounded-xl border-l-4 border-indigo-500">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold text-indigo-400 uppercase tracking-wide">Step 2 · Graph Fact Expansion (Neo4j)</span>
+              <span class="text-xs text-slate-500 font-mono">FACTS_CYPHER (Line 1234)</span>
+            </div>
+            <p class="text-xs text-slate-300 mt-1">
+              Takes the seed chunks, finds all entities mentioned in them (<code class="text-indigo-300">:MENTIONED_IN</code>), and collects all graph relationship edges connected to those entities (<code class="text-indigo-300">(:Entity)-[:REL]-(:Entity)</code>).
+            </p>
+          </div>
+
+          <div class="p-4 bg-slate-900/90 rounded-xl border-l-4 border-emerald-500">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold text-emerald-400 uppercase tracking-wide">Step 3 · Multi-Hop Extra Chunk Discovery</span>
+              <span class="text-xs text-slate-500 font-mono">EXTRA_CHUNKS_CYPHER (Line 1249)</span>
+            </div>
+            <p class="text-xs text-slate-300 mt-1">
+              Finds other document chunks in the vault that mention these same entities or their 1-hop graph neighbors. This allows the LLM to connect separate documents that vector search alone would have missed!
+            </p>
+          </div>
+
+          <div class="p-4 bg-slate-900/90 rounded-xl border-l-4 border-amber-500">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold text-amber-400 uppercase tracking-wide">Step 4 · Cited Synthesis with Local LLM</span>
+              <span class="text-xs text-slate-500 font-mono">ANSWER_PROMPT (Line 300)</span>
+            </div>
+            <p class="text-xs text-slate-300 mt-1">
+              Packs the graph facts, document cards, and ranked sources into a strict prompt. The LLM answers the question, citing facts with <code class="text-amber-400">[1]</code>, <code class="text-amber-400">[2]</code> matching the source transcripts.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 5: COMMANDS -->
+    <section id="sec-commands" class="tab-content hidden space-y-6">
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 md:p-8 shadow-xl">
+        <h2 class="text-2xl font-bold text-white mb-2 flex items-center gap-2">
+          <span class="w-3 h-3 rounded-full bg-amber-400"></span>
+          CLI Subcommands Reference
+        </h2>
+        <p class="text-[var(--muted-foreground)] mb-6 text-sm">
+          Everything <code class="text-cyan-400">family_graphrag.py</code> can do from the command line:
+        </p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <!-- build -->
+          <div class="p-4 bg-slate-900 rounded-xl border border-slate-700">
+            <div class="flex items-center justify-between mb-2">
+              <span class="px-2 py-0.5 rounded text-xs font-bold bg-cyan-900 text-cyan-300 font-mono">build</span>
+              <span class="text-xs text-slate-400">Index Vault</span>
+            </div>
+            <p class="text-xs text-slate-300 mb-3">Extracts cards and entities, updates ChromaDB vectors and Neo4j graph.</p>
+            <pre class="bg-black/60 p-2.5 rounded text-[11px] text-cyan-200 overflow-x-auto"><code>python -m src.family_graphrag build --src "data/extracted/text" --workers 4</code></pre>
+          </div>
+
+          <!-- ask -->
+          <div class="p-4 bg-slate-900 rounded-xl border border-slate-700">
+            <div class="flex items-center justify-between mb-2">
+              <span class="px-2 py-0.5 rounded text-xs font-bold bg-emerald-900 text-emerald-300 font-mono">ask</span>
+              <span class="text-xs text-slate-400">Question Answering</span>
+            </div>
+            <p class="text-xs text-slate-300 mb-3">Runs vector search + graph expansion to answer complex family questions.</p>
+            <pre class="bg-black/60 p-2.5 rounded text-[11px] text-emerald-200 overflow-x-auto"><code>python -m src.family_graphrag ask "What are my marks in intermediate?"</code></pre>
+          </div>
+
+          <!-- expiring -->
+          <div class="p-4 bg-slate-900 rounded-xl border border-slate-700">
+            <div class="flex items-center justify-between mb-2">
+              <span class="px-2 py-0.5 rounded text-xs font-bold bg-amber-900 text-amber-300 font-mono">expiring</span>
+              <span class="text-xs text-slate-400">Deadlines & Expirations</span>
+            </div>
+            <p class="text-xs text-slate-300 mb-3">Queries Neo4j for upcoming warranties, renewals, and deadlines in the next N days.</p>
+            <pre class="bg-black/60 p-2.5 rounded text-[11px] text-amber-200 overflow-x-auto"><code>python -m src.family_graphrag expiring --days 90</code></pre>
+          </div>
+
+          <!-- profile -->
+          <div class="p-4 bg-slate-900 rounded-xl border border-slate-700">
+            <div class="flex items-center justify-between mb-2">
+              <span class="px-2 py-0.5 rounded text-xs font-bold bg-purple-900 text-purple-300 font-mono">profile</span>
+              <span class="text-xs text-slate-400">Member Dossier</span>
+            </div>
+            <p class="text-xs text-slate-300 mb-3">Compiles all IDs, educational certificates, policies, and relations for one person.</p>
+            <pre class="bg-black/60 p-2.5 rounded text-[11px] text-purple-200 overflow-x-auto"><code>python -m src.family_graphrag profile "Saketh"</code></pre>
+          </div>
+
+          <!-- estimate -->
+          <div class="p-4 bg-slate-900 rounded-xl border border-slate-700 md:col-span-2">
+            <div class="flex items-center justify-between mb-2">
+              <span class="px-2 py-0.5 rounded text-xs font-bold bg-slate-800 text-slate-300 font-mono">estimate</span>
+              <span class="text-xs text-slate-400">Token Cost Preview</span>
+            </div>
+            <p class="text-xs text-slate-300 mb-2">Sizes the vault before spending inference time: computes doc counts, chunk counts, and estimated LLM tokens.</p>
+            <pre class="bg-black/60 p-2.5 rounded text-[11px] text-slate-200 overflow-x-auto"><code>python -m src.family_graphrag estimate --src "data/extracted/text"</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SECTION 6: PRIVACY -->
+    <section id="sec-privacy" class="tab-content hidden space-y-6">
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 md:p-8 shadow-xl">
+        <h2 class="text-2xl font-bold text-white mb-2 flex items-center gap-2">
+          <span class="w-3 h-3 rounded-full bg-red-400"></span>
+          Privacy Protection & PII Masking
+        </h2>
+        <p class="text-[var(--muted-foreground)] mb-6 text-sm">
+          Because family archives store sensitive personal information, security is baked into the code at two levels:
+        </p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div class="p-5 bg-slate-900 rounded-xl border border-slate-700">
+            <h3 class="text-base font-bold text-white mb-2 flex items-center gap-2">
+              🛡️ The Local-Only Firewall
+            </h3>
+            <p class="text-xs text-slate-300 leading-relaxed mb-3">
+              In function <code class="text-cyan-400">llm_client()</code> (line 494):
+            </p>
+            <pre class="bg-black/70 p-3 rounded-lg text-xs font-mono text-cyan-300"><code>if not LLM_IS_LOCAL and not ALLOW_REMOTE_LLM:
+    sys.exit("LLM_BASE_URL is not local!
+Personal documents would leave your control.")</code></pre>
+            <p class="text-xs text-slate-400 mt-3">
+              The script parses the LLM host IP/hostname and strictly blocks any remote internet endpoints unless you explicitly set <code class="text-amber-300">ALLOW_REMOTE_LLM=1</code>.
+            </p>
+          </div>
+
+          <div class="p-5 bg-slate-900 rounded-xl border border-slate-700">
+            <h3 class="text-base font-bold text-white mb-2 flex items-center gap-2">
+              🔒 Automatic PII Redaction
+            </h3>
+            <p class="text-xs text-slate-300 leading-relaxed mb-3">
+              If remote fallback is allowed, function <code class="text-cyan-400">redact()</code> (lines 467-482) uses regex to mask numbers before prompt transmission:
+            </p>
+            <ul class="text-xs text-slate-300 space-y-1 bg-slate-950 p-3 rounded-lg border border-slate-800 font-mono">
+              <li>12-digit Aadhaar &rarr; <span class="text-amber-400">[REDACTED-XXXX]</span></li>
+              <li>10-char Indian PAN &rarr; <span class="text-amber-400">[REDACTED-XXXX]</span></li>
+              <li>Passport numbers &rarr; <span class="text-amber-400">[REDACTED-XXXX]</span></li>
+              <li>Credit cards / Banks &rarr; <span class="text-amber-400">[REDACTED-XXXX]</span></li>
+              <li>Email addresses &rarr; <span class="text-amber-400">[REDACTED-EMAIL]</span></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="max-w-6xl mx-auto mt-12 pt-6 border-t border-[var(--border)] text-center text-xs text-[var(--muted-foreground)]">
+    Family GraphRAG Technical Architecture Guide · Generated for Antigravity pair programming session
+  </footer>
+
+  <script>
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(content => content.classList.add('hidden'));
+
+      const activeBtn = document.getElementById('tab-' + tabId);
+      const activeContent = document.getElementById('sec-' + tabId);
+
+      if (activeBtn) activeBtn.classList.add('active');
+      if (activeContent) activeContent.classList.remove('hidden');
+    }
+  </script>
+</body>
+</html>
+
